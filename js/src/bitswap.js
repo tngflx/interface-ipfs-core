@@ -2,6 +2,7 @@
 
 const chai = require('chai')
 const dirtyChai = require('dirty-chai')
+const series = require('async/series')
 const expect = chai.expect
 const statsTests = require('./utils/stats')
 chai.use(dirtyChai)
@@ -9,7 +10,9 @@ const CID = require('cids')
 
 module.exports = (common) => {
   describe('.bitswap online', () => {
-    let ipfs
+    let ipfsA
+    let ipfsB
+    let ipfsBId
     const key = 'QmUBdnXXPyoDFXj3Hj39dNJ5VkN3QFRskXxcGaYFBB8CNR'
 
     before(function (done) {
@@ -19,14 +22,34 @@ module.exports = (common) => {
 
       common.setup((err, factory) => {
         expect(err).to.not.exist()
-        factory.spawnNode((err, node) => {
-          expect(err).to.not.exist()
-          ipfs = node
-          ipfs.block.get(new CID(key))
-            .then(() => {})
-            .catch(() => {})
-          setTimeout(done, 250)
-        })
+        series([
+          (cb) => factory.spawnNode((err, node) => {
+            expect(err).to.not.exist()
+            ipfsA = node
+            cb()
+          }),
+          (cb) => factory.spawnNode((err, node) => {
+            expect(err).to.not.exist()
+            ipfsB = node
+            cb()
+          }),
+          (cb) => {
+            ipfsB.id((err, id) => {
+              expect(err).to.not.exist()
+              const ipfsBAddr = id.addresses[0]
+              ipfsBId = id.id
+              ipfsA.swarm.connect(ipfsBAddr, cb)
+            })
+          },
+          (cb) => {
+            //Ask for a block so we can check that it shows up in our peer's wantlist
+            ipfsB.block.get(new CID(key))
+              .then(() => {})
+              .catch(() => {})
+            //Wait a short amount of time for the block to show up in our peer's wantlist
+            setTimeout(cb, 500)
+          }
+        ], done)
       })
     })
 
@@ -34,14 +57,23 @@ module.exports = (common) => {
 
     it('.stat', (done) => {
 
-      ipfs.bitswap.stat((err, stats) => {
+      ipfsA.bitswap.stat((err, stats) => {
+        expect(err).to.not.exist()
         statsTests.expectIsBitswap(err, stats)
         done()
       })
     })
 
     it('.wantlist', (done) => {
-      ipfs.bitswap.wantlist((err, list) => {
+      ipfsB.bitswap.wantlist((err, list) => {
+        expect(err).to.not.exist()
+        expect(list[0].cid.toBaseEncodedString()).to.equal(key)
+        done()
+      })
+    })
+
+    it('.wantlist peerid', (done) => {
+      ipfsA.bitswap.wantlist(ipfsBId, (err, list) => {
         expect(err).to.not.exist()
         expect(list[0].cid.toBaseEncodedString()).to.equal(key)
         done()
@@ -49,8 +81,9 @@ module.exports = (common) => {
     })
 
     it('.unwant', (done) => {
-      ipfs.bitswap.unwant(new CID(key), (err) => {
-        ipfs.bitswap.wantlist((err, list) => {
+      ipfsA.bitswap.unwant(new CID(key), (err) => {
+        ipfsA.bitswap.wantlist((err, list) => {
+          expect(err).to.not.exist()
           expect(list).to.be.empty()
           done()
         })
@@ -87,21 +120,21 @@ module.exports = (common) => {
 
     it('.stat gives error while offline', () => {
       ipfs.bitswap.stat((err, stats) => {
-        expect(err).to.exist()
+        expect(err).to.match(/online mode/)
         expect(stats).to.not.exist()
       })
     })
 
     it('.wantlist gives error if offline', () => {
       ipfs.bitswap.wantlist((err, list) => {
-        expect(err).to.exist()
+        expect(err).to.match(/online mode/)
         expect(list).to.not.exist()
       })
     })
 
     it('.unwant gives error if offline', () => {
       expect(() => ipfs.bitswap.unwant(new CID(key), (err) => {
-        expect(err).to.exist()
+        expect(err).to.match(/online mode/)
       }))
     })
   })
